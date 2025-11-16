@@ -40,6 +40,16 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import uuid
+import sys
+import os
+
+# Add parent directory to path for utils import
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.secrets_manager import (
+    get_slack_webhook,
+    get_twilio_credentials,
+    get_smtp_credentials
+)
 
 
 class AlertEngine:
@@ -315,37 +325,30 @@ class AlertEngine:
 
         # Send email
         try:
-            # Check if SMTP is configured
-            smtp_enabled = os.getenv('SMTP_ENABLED', 'false').lower() == 'true'
+            # Get SMTP credentials from Databricks secrets
+            smtp_config = get_smtp_credentials()
 
-            if smtp_enabled:
+            if smtp_config['enabled']:
                 # Real SMTP sending
                 msg = MIMEMultipart('alternative')
                 msg['Subject'] = subject
-                msg['From'] = self.notification_config['email_from']
+                msg['From'] = smtp_config['from_email']
                 msg['To'] = ', '.join(alert['notify'])
                 msg.attach(MIMEText(body_html, 'html'))
 
-                # Get SMTP credentials from environment
-                smtp_server = os.getenv('SMTP_SERVER', self.notification_config['smtp_server'])
-                smtp_port = int(os.getenv('SMTP_PORT', self.notification_config['smtp_port']))
-                smtp_username = os.getenv('SMTP_USERNAME')
-                smtp_password = os.getenv('SMTP_PASSWORD')
-                use_tls = os.getenv('SMTP_USE_TLS', 'true').lower() == 'true'
-
                 # Send email
-                server = smtplib.SMTP(smtp_server, smtp_port)
+                server = smtplib.SMTP(smtp_config['server'], smtp_config['port'])
 
-                if use_tls:
+                if smtp_config['use_tls']:
                     server.starttls()
 
-                if smtp_username and smtp_password:
-                    server.login(smtp_username, smtp_password)
+                if smtp_config['username'] and smtp_config['password']:
+                    server.login(smtp_config['username'], smtp_config['password'])
 
                 server.send_message(msg)
                 server.quit()
 
-                print(f"   ✅ Email sent to {len(alert['notify'])} recipients via {smtp_server}")
+                print(f"   ✅ Email sent to {len(alert['notify'])} recipients via {smtp_config['server']}")
             else:
                 # Simulated mode (default)
                 print(f"   ✅ Email notification ready for {len(alert['notify'])} recipients")
@@ -411,11 +414,18 @@ class AlertEngine:
 
         # Send to Slack
         try:
-            webhook_url = self.notification_config['slack_webhook']
+            # Get Slack webhook URL from Databricks secrets
+            webhook_url = get_slack_webhook()
+
+            if not webhook_url:
+                print(f"   ⚠️  Slack webhook not configured in Databricks secrets")
+                print(f"   💡 Run: databricks secrets put-secret art_integrations slack_webhook_url")
+                return
+
             response = requests.post(webhook_url, json=message, timeout=10)
 
             if response.status_code == 200:
-                print(f"   ✅ Slack alert sent")
+                print(f"   ✅ Slack alert sent to #all-mcp-testers")
             else:
                 print(f"   ❌ Slack alert failed: {response.status_code}")
 
@@ -425,8 +435,8 @@ class AlertEngine:
     def _send_sms_alert(self, alert):
         """Send SMS notification using Twilio"""
 
-        # Check if SMS is enabled via environment variable
-        sms_enabled = os.getenv('SMS_ENABLED', 'false').lower() == 'true'
+        # Get Twilio credentials from Databricks secrets
+        twilio_config = get_twilio_credentials()
 
         # Get recipients (phone numbers)
         recipients = alert.get('notify', [])
@@ -442,23 +452,19 @@ class AlertEngine:
             f"Time: {alert['triggered_at']}"
         )
 
-        if sms_enabled:
+        if twilio_config['enabled']:
             # Real SMS sending using Twilio
             try:
                 from twilio.rest import Client
 
-                # Get Twilio credentials from environment
-                account_sid = os.getenv('TWILIO_ACCOUNT_SID')
-                auth_token = os.getenv('TWILIO_AUTH_TOKEN')
-                from_phone = os.getenv('TWILIO_PHONE_NUMBER')
-
-                if not all([account_sid, auth_token, from_phone]):
-                    print(f"   ⚠️  SMS enabled but Twilio credentials incomplete")
-                    print(f"   💡 Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER")
+                # Verify credentials are present
+                if not all([twilio_config['account_sid'], twilio_config['auth_token'], twilio_config['phone_number']]):
+                    print(f"   ⚠️  SMS enabled but Twilio credentials incomplete in Databricks secrets")
+                    print(f"   💡 Run setup_secrets.sh to configure Twilio credentials")
                     return
 
                 # Initialize Twilio client
-                client = Client(account_sid, auth_token)
+                client = Client(twilio_config['account_sid'], twilio_config['auth_token'])
 
                 # Send SMS to each recipient
                 sent_count = 0
@@ -466,7 +472,7 @@ class AlertEngine:
                     try:
                         message = client.messages.create(
                             body=message_body,
-                            from_=from_phone,
+                            from_=twilio_config['phone_number'],
                             to=to_phone
                         )
                         sent_count += 1
@@ -482,13 +488,13 @@ class AlertEngine:
                 print(f"   📱 Would send SMS: {message_body[:50]}...")
             except Exception as e:
                 print(f"   ❌ SMS sending failed: {str(e)}")
-                print(f"   💡 Check your Twilio configuration")
+                print(f"   💡 Check your Twilio configuration in Databricks secrets")
         else:
             # Simulation mode - show what would be sent
             print(f"   📱 SMS alert (simulated)")
             print(f"      Recipients: {', '.join(recipients)}")
             print(f"      Message: {message_body}")
-            print(f"   💡 Set SMS_ENABLED=true to send real SMS via Twilio")
+            print(f"   💡 Run setup_secrets.sh and set sms_enabled=true in Databricks secrets")
 
     def _execute_action(self, alert):
         """Execute automated action based on alert"""

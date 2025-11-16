@@ -39,6 +39,11 @@ from simple_salesforce import Salesforce, SalesforceLogin, SFBulkHandler
 from pyspark.sql import SparkSession, functions as F
 from datetime import datetime, timedelta
 import os
+import sys
+
+# Add parent directory to path for utils import
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.secrets_manager import get_salesforce_credentials
 
 
 class SalesforceSync:
@@ -48,15 +53,13 @@ class SalesforceSync:
         self.spark = SparkSession.builder.getOrCreate()
         self.catalog = "art_member_listening"
 
-        # Salesforce credentials (from Databricks secrets or environment)
-        self.sf_username = self._get_secret("salesforce_username")
-        self.sf_password = self._get_secret("salesforce_password")
-        self.sf_security_token = self._get_secret("salesforce_security_token")
-        self.sf_client_id = self._get_secret("salesforce_client_id", required=False)
-        self.sf_client_secret = self._get_secret("salesforce_client_secret", required=False)
+        # Get Salesforce credentials from Databricks secrets
+        sf_creds = get_salesforce_credentials()
 
-        # Salesforce domain (use 'test' for sandbox, leave blank for production)
-        self.sf_domain = os.getenv("SALESFORCE_DOMAIN", "test")  # Change to '' for production
+        self.sf_username = sf_creds['username']
+        self.sf_password = sf_creds['password']
+        self.sf_security_token = sf_creds['security_token']
+        self.sf_domain = sf_creds['domain']  # 'test' for dev org, 'login' for production
 
         # Connect to Salesforce
         self.sf = self._connect()
@@ -71,46 +74,19 @@ class SalesforceSync:
             'latest_feedback': 'Latest_Feedback__c'
         }
 
-    def _get_secret(self, secret_name, required=True):
-        """Get secret from Databricks secrets or environment variable"""
-
-        try:
-            # Try Databricks secrets first
-            from databricks.sdk import WorkspaceClient
-            w = WorkspaceClient()
-            return w.secrets.get_secret(scope="salesforce", key=secret_name)
-        except:
-            # Fall back to environment variable
-            value = os.getenv(secret_name.upper())
-            if not value and required:
-                raise ValueError(f"Secret '{secret_name}' not found in Databricks secrets or environment")
-            return value
-
     def _connect(self):
         """Connect to Salesforce"""
 
         print("🔗 Connecting to Salesforce...")
 
         try:
-            if self.sf_client_id and self.sf_client_secret:
-                # OAuth 2.0 flow
-                session_id, instance = SalesforceLogin(
-                    username=self.sf_username,
-                    password=self.sf_password,
-                    security_token=self.sf_security_token,
-                    client_id=self.sf_client_id,
-                    domain=self.sf_domain if self.sf_domain else None
-                )
-
-                sf = Salesforce(instance=instance, session_id=session_id)
-            else:
-                # Simple username/password login
-                sf = Salesforce(
-                    username=self.sf_username,
-                    password=self.sf_password,
-                    security_token=self.sf_security_token,
-                    domain=self.sf_domain if self.sf_domain else None
-                )
+            # Simple username/password login (works with dev orgs and production)
+            sf = Salesforce(
+                username=self.sf_username,
+                password=self.sf_password,
+                security_token=self.sf_security_token,
+                domain=self.sf_domain if self.sf_domain != 'login' else None
+            )
 
             print(f"✅ Connected to Salesforce ({sf.sf_instance})")
             return sf
