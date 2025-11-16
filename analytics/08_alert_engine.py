@@ -54,7 +54,7 @@ class AlertEngine:
 
         # Notification settings
         self.notification_config = {
-            "slack_webhook": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL",
+            "slack_webhook": os.getenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"),
             "email_from": "member-listening@art.com.au",
             "smtp_server": "smtp.art.com.au",
             "smtp_port": 587

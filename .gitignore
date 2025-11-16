@@ -51,9 +51,10 @@ data/
 *.log
 logs/
 
-# Environment variables
+# Environment variables and credentials
 .env
 .env.local
+CREDENTIALS.md
 
 # OS
 .DS_Store
