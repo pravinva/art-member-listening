@@ -585,7 +585,72 @@ def scheduled_case_management():
     # 3. Auto-escalate critical breached cases
     if sla_status['breached']:
         print(f"\n3️⃣  Auto-escalating {len(sla_status['breached'])} breached cases...")
-        # TODO: Add auto-escalation logic
+
+        # Define escalation paths based on severity
+        escalation_rules = {
+            'Critical': {
+                'escalate_to': 'gm@art.com.au',
+                'reason': 'Critical SLA breach - immediate attention required'
+            },
+            'High': {
+                'escalate_to': 'senior-care-team@art.com.au',
+                'reason': 'High severity SLA breach - escalation required'
+            },
+            'Medium': {
+                'escalate_to': 'team-lead@art.com.au',
+                'reason': 'Medium severity SLA breach - review required'
+            }
+        }
+
+        escalated_count = 0
+        for case in sla_status['breached']:
+            case_id = case['case_id']
+            severity = case['severity']
+
+            # Get escalation rule for this severity
+            escalation = escalation_rules.get(severity)
+
+            if escalation and severity in ['Critical', 'High']:
+                # Auto-escalate Critical and High severity breached cases
+                manager.escalate_case(
+                    case_id=case_id,
+                    escalate_to=escalation['escalate_to'],
+                    reason=escalation['reason'],
+                    user='SYSTEM_AUTO_ESCALATION'
+                )
+                escalated_count += 1
+
+                # Send alert notification for critical escalations
+                if severity == 'Critical':
+                    try:
+                        from analytics.alert_engine import AlertEngine
+                        alert_engine = AlertEngine()
+
+                        # Create escalation alert
+                        alert_data = {
+                            'rule_id': 'auto_escalation_critical',
+                            'rule_description': f'Critical case {case_id} auto-escalated due to SLA breach',
+                            'severity': 'Critical',
+                            'count': 1,
+                            'triggered_at': datetime.now(),
+                            'notify': [escalation['escalate_to']],
+                            'matches': [{
+                                'case_id': case_id,
+                                'member_id': case.get('member_id', 'Unknown'),
+                                'text_preview': f"SLA breached by {case.get('breach_hours', 0):.1f} hours"
+                            }]
+                        }
+
+                        # Send email alert for critical escalations
+                        alert_engine._send_email_alert(alert_data)
+
+                    except Exception as e:
+                        print(f"   ⚠️  Failed to send escalation alert: {e}")
+
+        if escalated_count > 0:
+            print(f"   ✅ Auto-escalated {escalated_count} cases")
+        else:
+            print(f"   ℹ️  No cases required auto-escalation (Low severity breaches)")
 
     # 4. Print summary
     print("\n📊 Summary:")

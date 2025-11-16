@@ -315,21 +315,47 @@ class AlertEngine:
 
         # Send email
         try:
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = self.notification_config['email_from']
-            msg['To'] = ', '.join(alert['notify'])
+            # Check if SMTP is configured
+            smtp_enabled = os.getenv('SMTP_ENABLED', 'false').lower() == 'true'
 
-            msg.attach(MIMEText(body_html, 'html'))
+            if smtp_enabled:
+                # Real SMTP sending
+                msg = MIMEMultipart('alternative')
+                msg['Subject'] = subject
+                msg['From'] = self.notification_config['email_from']
+                msg['To'] = ', '.join(alert['notify'])
+                msg.attach(MIMEText(body_html, 'html'))
 
-            # Note: In production, use actual SMTP server
-            print(f"   ✅ Email sent to {len(alert['notify'])} recipients")
-            # smtp = smtplib.SMTP(self.notification_config['smtp_server'], self.notification_config['smtp_port'])
-            # smtp.send_message(msg)
-            # smtp.quit()
+                # Get SMTP credentials from environment
+                smtp_server = os.getenv('SMTP_SERVER', self.notification_config['smtp_server'])
+                smtp_port = int(os.getenv('SMTP_PORT', self.notification_config['smtp_port']))
+                smtp_username = os.getenv('SMTP_USERNAME')
+                smtp_password = os.getenv('SMTP_PASSWORD')
+                use_tls = os.getenv('SMTP_USE_TLS', 'true').lower() == 'true'
+
+                # Send email
+                server = smtplib.SMTP(smtp_server, smtp_port)
+
+                if use_tls:
+                    server.starttls()
+
+                if smtp_username and smtp_password:
+                    server.login(smtp_username, smtp_password)
+
+                server.send_message(msg)
+                server.quit()
+
+                print(f"   ✅ Email sent to {len(alert['notify'])} recipients via {smtp_server}")
+            else:
+                # Simulated mode (default)
+                print(f"   ✅ Email notification ready for {len(alert['notify'])} recipients")
+                print(f"      Subject: {subject}")
+                print(f"      To: {', '.join(alert['notify'])}")
+                print(f"      💡 Set SMTP_ENABLED=true to send real emails")
 
         except Exception as e:
             print(f"   ❌ Email sending failed: {e}")
+            print(f"      💡 Check SMTP configuration in environment variables")
 
     def _send_slack_alert(self, alert):
         """Send Slack notification"""
@@ -397,12 +423,72 @@ class AlertEngine:
             print(f"   ❌ Slack sending failed: {e}")
 
     def _send_sms_alert(self, alert):
-        """Send SMS notification (using Twilio or similar)"""
+        """Send SMS notification using Twilio"""
 
-        # Note: Implement with Twilio SDK in production
-        message = f"ART Alert ({alert['severity']}): {alert['rule_description']}. {alert['count']} members affected."
+        # Check if SMS is enabled via environment variable
+        sms_enabled = os.getenv('SMS_ENABLED', 'false').lower() == 'true'
 
-        print(f"   ✅ SMS alert sent (simulated): {message}")
+        # Get recipients (phone numbers)
+        recipients = alert.get('notify', [])
+        if not recipients:
+            print(f"   ℹ️  No SMS recipients configured for this alert")
+            return
+
+        # Prepare message content
+        message_body = (
+            f"ART Alert ({alert['severity']})\n"
+            f"{alert['rule_description']}\n"
+            f"{alert['count']} members affected\n"
+            f"Time: {alert['triggered_at']}"
+        )
+
+        if sms_enabled:
+            # Real SMS sending using Twilio
+            try:
+                from twilio.rest import Client
+
+                # Get Twilio credentials from environment
+                account_sid = os.getenv('TWILIO_ACCOUNT_SID')
+                auth_token = os.getenv('TWILIO_AUTH_TOKEN')
+                from_phone = os.getenv('TWILIO_PHONE_NUMBER')
+
+                if not all([account_sid, auth_token, from_phone]):
+                    print(f"   ⚠️  SMS enabled but Twilio credentials incomplete")
+                    print(f"   💡 Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER")
+                    return
+
+                # Initialize Twilio client
+                client = Client(account_sid, auth_token)
+
+                # Send SMS to each recipient
+                sent_count = 0
+                for to_phone in recipients:
+                    try:
+                        message = client.messages.create(
+                            body=message_body,
+                            from_=from_phone,
+                            to=to_phone
+                        )
+                        sent_count += 1
+                        print(f"   ✅ SMS sent to {to_phone} (SID: {message.sid})")
+                    except Exception as e:
+                        print(f"   ❌ Failed to send SMS to {to_phone}: {str(e)}")
+
+                if sent_count > 0:
+                    print(f"   ✅ {sent_count}/{len(recipients)} SMS alerts sent successfully")
+
+            except ImportError:
+                print(f"   ⚠️  Twilio library not installed. Run: pip install twilio")
+                print(f"   📱 Would send SMS: {message_body[:50]}...")
+            except Exception as e:
+                print(f"   ❌ SMS sending failed: {str(e)}")
+                print(f"   💡 Check your Twilio configuration")
+        else:
+            # Simulation mode - show what would be sent
+            print(f"   📱 SMS alert (simulated)")
+            print(f"      Recipients: {', '.join(recipients)}")
+            print(f"      Message: {message_body}")
+            print(f"   💡 Set SMS_ENABLED=true to send real SMS via Twilio")
 
     def _execute_action(self, alert):
         """Execute automated action based on alert"""

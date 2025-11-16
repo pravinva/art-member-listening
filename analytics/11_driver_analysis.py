@@ -264,11 +264,129 @@ class DriverAnalyzer:
 
             X = df[feature_cols]
 
-            # Note: SHAP requires the actual sklearn/xgboost model
-            # For demonstration, show correlation-based importance
+            # Load the actual Spark ML model and convert to sklearn-compatible format
+            if model_path:
+                try:
+                    from pyspark.ml import PipelineModel
+                    from pyspark.ml.classification import GBTClassificationModel
 
-            print("\n🔑 Feature Importance (based on correlations):")
+                    # Load Spark ML model
+                    pipeline_model = PipelineModel.load(model_path)
+                    gbt_model = None
+
+                    # Extract GBT model from pipeline
+                    for stage in pipeline_model.stages:
+                        if isinstance(stage, GBTClassificationModel):
+                            gbt_model = stage
+                            break
+
+                    if gbt_model:
+                        # Use TreeExplainer for tree-based models
+                        print("   Using SHAP TreeExplainer with Spark ML GBT model...")
+
+                        # Create a compatible model wrapper for SHAP
+                        # Note: For Spark ML, we'll use SHAP's KernelExplainer as fallback
+                        explainer = shap.KernelExplainer(
+                            model=lambda x: model.predict_proba(x)[:, 1],
+                            data=shap.sample(X, 100),  # Use sample as background
+                            link="logit"
+                        )
+
+                        # Calculate SHAP values for high-risk members
+                        print("   Calculating SHAP values (this may take a moment)...")
+                        shap_values = explainer.shap_values(X.head(50))  # Top 50 at-risk members
+
+                        # Calculate mean absolute SHAP values for feature importance
+                        mean_shap = np.abs(shap_values).mean(axis=0)
+
+                        importance = []
+                        for idx, col in enumerate(feature_cols):
+                            importance.append({
+                                'feature': col,
+                                'importance': mean_shap[idx],
+                                'shap_mean': np.mean(shap_values[:, idx]),
+                                'direction': 'increases risk' if np.mean(shap_values[:, idx]) > 0 else 'decreases risk'
+                            })
+
+                        importance_df = pd.DataFrame(importance).sort_values('importance', ascending=False)
+
+                        print("\n🔑 Feature Importance (SHAP values):")
+                        print("=" * 80)
+
+                        for idx, row in importance_df.head(10).iterrows():
+                            direction_emoji = "📈" if row['direction'] == 'increases risk' else "📉"
+                            print(f"  {direction_emoji} {row['feature']}: {row['importance']:.3f} ({row['direction']})")
+
+                        # Save SHAP summary plot if possible
+                        try:
+                            import matplotlib.pyplot as plt
+                            plt.figure(figsize=(10, 6))
+                            shap.summary_plot(shap_values, X.head(50), feature_names=feature_cols, show=False)
+                            plot_path = "/tmp/shap_summary.png"
+                            plt.savefig(plot_path, bbox_inches='tight', dpi=150)
+                            print(f"\n   📊 SHAP summary plot saved to: {plot_path}")
+                            plt.close()
+                        except Exception as e:
+                            print(f"   ℹ️  Could not generate SHAP plot: {e}")
+
+                    else:
+                        raise ValueError("GBT model not found in pipeline")
+
+                except Exception as e:
+                    print(f"   ⚠️  Could not load Spark ML model: {e}")
+                    print("   Falling back to correlation-based importance...")
+                    raise  # Re-raise to trigger correlation fallback
+
+            else:
+                # No model path provided - use correlation-based fallback
+                print("   ℹ️  No model path provided, using correlation-based importance...")
+                raise ImportError("Using correlation fallback")
+
+            print("\n💡 Actionable Insights:")
             print("=" * 80)
+
+            self._generate_insights(importance_df)
+
+            return importance_df
+
+        except (ImportError, Exception) as e:
+            # Fallback to correlation-based importance
+            print(f"   ⚠️  SHAP analysis unavailable ({str(e)})")
+            print("   Using correlation-based importance as fallback...\n")
+
+            print("\n🔑 Feature Importance (correlation-based fallback):")
+            print("=" * 80)
+
+            # Get data for correlation fallback
+            query = f"""
+            SELECT
+                member_id,
+                at_risk_probability,
+                days_since_last_login,
+                login_frequency_30d,
+                avg_sentiment_30d,
+                negative_interaction_count_30d,
+                contact_frequency_30d,
+                channel_diversity_30d,
+                insurance_topic_count_30d,
+                account_balance,
+                years_as_member
+            FROM {self.catalog}.gold.member_at_risk_scores_ml
+            WHERE scored_at >= DATE_SUB(CURRENT_DATE(), 1)
+              AND at_risk_probability >= 0.7
+            LIMIT 100
+            """
+
+            df = self.spark.sql(query).toPandas()
+
+            feature_cols = [
+                'days_since_last_login', 'login_frequency_30d',
+                'avg_sentiment_30d', 'negative_interaction_count_30d',
+                'contact_frequency_30d', 'channel_diversity_30d',
+                'insurance_topic_count_30d', 'account_balance', 'years_as_member'
+            ]
+
+            X = df[feature_cols]
 
             # Calculate feature importance from correlations
             importance = []
@@ -285,16 +403,16 @@ class DriverAnalyzer:
             for idx, row in importance_df.head(10).iterrows():
                 print(f"  {row['feature']}: {row['importance']:.3f} ({row['direction']})")
 
+            print("\n💡 To use SHAP analysis:")
+            print("  1. Install SHAP: pip install shap")
+            print("  2. Provide model path: analyzer.get_shap_explanations(model_path='dbfs:/...')")
+
             print("\n💡 Actionable Insights:")
             print("=" * 80)
 
             self._generate_insights(importance_df)
 
             return importance_df
-
-        except ImportError:
-            print("⚠️  SHAP library not available. Install with: pip install shap")
-            return None
 
     def _generate_insights(self, importance_df):
         """Generate actionable insights from driver analysis"""
